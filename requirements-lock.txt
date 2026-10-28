@@ -43,6 +43,8 @@ regex==2026.9.29
 requests==2.34.2
 rich==15.0.0
 shellingham==1.5.4
+sherpa-onnx-core==1.13.8
+sherpa_onnx==1.13.8
 starlette==1.10.0
 tenacity==9.2.1
 tiktoken==0.14.0

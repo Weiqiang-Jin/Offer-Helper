@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from interview import app as module
 from interview.audio import mono_pcm
-from interview.answers import messages
+from interview.answers import messages, punctuate_question
 
 
 @pytest.fixture
@@ -14,6 +14,7 @@ def client(monkeypatch):
     monkeypatch.setattr(module, "CONFIG", dict(module.CONFIG))
     monkeypatch.setitem(module.CONFIG, "llm_key", "")
     monkeypatch.setitem(module.CONFIG, "asr_key", "")
+    monkeypatch.setitem(module.CONFIG, "asr_backend", "dashscope")
     with TestClient(module.app) as c:
         c.headers["Authorization"] = "Bearer " + module.TOKEN
         yield c
@@ -23,7 +24,8 @@ def test_auth_and_missing_credentials(client):
     assert client.get('/api/state', headers={'Authorization': ''}).status_code == 401
     assert client.post('/api/answer', json={'question': '为什么？'}).status_code == 400
     assert client.post('/api/audio/start', json={'remote': 1, 'self_device': 2, 'transcribe': True}).status_code == 400
-    assert client.post('/api/answer', json={'question': '   ', 'demo': True}).status_code == 400
+    assert client.post('/api/answer', json={'question': '   '}).status_code == 400
+    assert client.post('/api/answer', json={'question': '问题', 'demo': True}).status_code == 400
 
 
 def test_transcript_finalization_and_stale_session(client):
@@ -36,7 +38,11 @@ def test_transcript_finalization_and_stale_session(client):
     assert s.history[0]['text'] == '完整问题'
 
 
-def test_demo_websocket_and_reset(client):
+def test_model_websocket_and_reset(client, monkeypatch):
+    async def model_answer(*args):
+        yield '模型回答'
+    monkeypatch.setattr(module, 'stream_answer', model_answer)
+    monkeypatch.setitem(module.CONFIG, 'llm_key', 'fake')
     with client.websocket_connect('/ws') as ws:
         ws.send_json({'token': module.TOKEN})
         assert ws.receive_json()['type'] == 'snapshot'
@@ -50,7 +56,7 @@ def test_demo_websocket_and_reset(client):
             if event['type']=='answer_end':
                 assert event['status']=='done'
                 break
-        assert '固定模板' in ''.join(chunks)
+        assert ''.join(chunks) == '模型回答'
         assert len(module.state.history)==1  # Generated advice is not spoken history.
         assert client.post('/api/reset',json={}).status_code==200
         assert client.get('/api/state').json()['history']==[]
@@ -72,6 +78,43 @@ def test_generation_cancellation_and_concurrency(client, monkeypatch):
         assert client.post('/api/answer/cancel',json={}).status_code==200
         assert ws.receive_json()['status']=='cancelled'
         assert module.state.answer=='开始'
+
+
+def test_transcribed_question_is_punctuated_before_answer(client, monkeypatch):
+    seen = []
+    async def punctuate(config, question):
+        return '请介绍项目，并说明你的职责。'
+    async def answer(config, question, profile, history):
+        seen.append(question)
+        yield '回答'
+    monkeypatch.setattr(module, 'punctuate_question', punctuate)
+    monkeypatch.setattr(module, 'stream_answer', answer)
+    monkeypatch.setitem(module.CONFIG, 'llm_key', 'fake')
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'token': module.TOKEN}); ws.receive_json()
+        assert client.post('/api/answer', json={'question': '请介绍项目并说明你的职责', 'transcribed': True}).status_code == 200
+        events = []
+        while not events or events[-1]['type'] != 'answer_end':
+            events.append(ws.receive_json())
+    assert seen == ['请介绍项目，并说明你的职责。']
+    assert next(x for x in events if x['type'] == 'question_normalized')['question'] == seen[0]
+
+
+def test_punctuation_only_accepts_unchanged_words(monkeypatch):
+    import httpx
+    from interview import answers
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, *args, **kwargs):
+            return httpx.Response(200, json={'choices': [{'message': {'content': self.result}}]}, request=httpx.Request('POST', 'http://test'))
+    client = Client()
+    monkeypatch.setattr(answers.httpx, 'AsyncClient', lambda **kwargs: client)
+    config = {'llm_url': 'http://test', 'llm_key': 'fake', 'llm_model': 'test'}
+    client.result = '请介绍项目，并说明你负责的部分。'
+    assert asyncio.run(punctuate_question(config, '请介绍项目并说明你负责的部分')) == client.result
+    client.result = '请介绍产品，并说明你负责的部分。'
+    assert asyncio.run(punctuate_question(config, '请介绍项目并说明你负责的部分')) == '请介绍项目并说明你负责的部分'
 
 
 def test_audio_downmix_and_prompt():
@@ -99,6 +142,26 @@ def test_remote_audio_needs_no_microphone(client, monkeypatch):
     assert client.post('/api/audio/start', json={'remote': 8}).status_code == 200
     assert client.post('/api/audio/stop', json={}).status_code == 200
     assert client.post('/api/transcript', json={'role': 'self', 'text': '过去回答'}).status_code == 422
+
+
+def test_local_asr_needs_model_not_cloud_key(client, monkeypatch):
+    monkeypatch.setitem(module.CONFIG, 'asr_backend', 'sherpa')
+    monkeypatch.setattr(module, 'local_asr_ready', lambda config: False)
+    response = client.post('/api/audio/start', json={'remote': 8, 'transcribe': True})
+    assert response.status_code == 400
+    assert 'download-asr.bat' in response.json()['detail']
+    monkeypatch.setattr(module, 'local_asr_ready', lambda config: True)
+    monkeypatch.setattr(module, 'devices', lambda: {'remote': [{'id': 8}], 'self': []})
+    class LocalAudio:
+        id = 'local'
+        def __init__(self, selected, transcribe, config, emit):
+            assert selected == {'remote': 8}
+            assert transcribe and config['asr_key'] == ''
+        def start(self): pass
+        def stop(self): pass
+    monkeypatch.setattr(module, 'AudioSession', LocalAudio)
+    assert client.post('/api/audio/start', json={'remote': 8, 'transcribe': True}).status_code == 200
+    assert client.get('/api/state').json()['configured']['asr_backend'] == 'sherpa'
 
 
 def test_model_settings_persist_redact_and_destination_change(client, monkeypatch, tmp_path):

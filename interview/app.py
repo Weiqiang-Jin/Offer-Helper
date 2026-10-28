@@ -16,14 +16,16 @@ from pydantic import BaseModel, Field
 
 from .audio import AudioSession, devices
 from .device_test import DeviceTest
-from .answers import stream_answer
+from .answers import stream_answer, punctuate_question, question_boundary
 from .settings import ModelSettings, load_settings, public_settings, update_settings
 from .mobile import Companion
+from .local_asr import ready as local_asr_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 TOKEN = os.environ.get("INTERVIEW_TOKEN") or secrets.token_urlsafe(32)
-CONFIG = {"asr_key": os.getenv("DASHSCOPE_API_KEY", ""),
+CONFIG = {"asr_backend": os.getenv("ASR_BACKEND", "sherpa"),
+          "asr_model_dir": os.getenv("SHERPA_MODEL_DIR", ""),"asr_key": os.getenv("DASHSCOPE_API_KEY", ""),
           "asr_url": os.getenv("ASR_WS_URL", "wss://dashscope.aliyuncs.com/api-ws/v1/inference"),
           "asr_model": os.getenv("ASR_MODEL", "paraformer-realtime-v2"),
           "llm_key": os.getenv("LLM_API_KEY", "") or os.getenv("DASHSCOPE_API_KEY", ""),
@@ -54,7 +56,7 @@ class State:
                 "question": self.question, "answer_status": self.answer_status,
                 "audio_status": self.status, "mode": self.mode,
                 "device_test": {**self.test_status, 'has_clip': self.test_clip is not None},
-                "configured": {"asr": bool(CONFIG["asr_key"]), "llm": bool(CONFIG["llm_key"])}}
+                "configured": {"asr": local_asr_ready(CONFIG) if CONFIG["asr_backend"] == "sherpa" else bool(CONFIG["asr_key"]), "asr_backend": CONFIG["asr_backend"], "llm": bool(CONFIG["llm_key"])}}
 
     def publish(self, event):
         for q in list(self.clients):
@@ -228,7 +230,11 @@ async def start_audio(body: Start):
     async with state.lock:
         if state.audio:
             raise HTTPException(409, "请先停止当前采集。")
-        if body.transcribe and not CONFIG["asr_key"]:
+        if body.transcribe and CONFIG['asr_backend'] == 'sherpa' and not local_asr_ready(CONFIG):
+            raise HTTPException(400, '本地语音模型未安装，请运行 download-asr.bat 下载模型后重试。')
+        if body.transcribe and CONFIG['asr_backend'] not in ('sherpa', 'dashscope'):
+            raise HTTPException(400, 'ASR_BACKEND 仅支持 sherpa 或 dashscope。')
+        if body.transcribe and CONFIG['asr_backend'] == 'dashscope' and not CONFIG["asr_key"]:
             raise HTTPException(400, "尚未配置 DASHSCOPE_API_KEY，可先运行音量测试。")
         available = await asyncio.to_thread(devices)
         selected = {}
@@ -277,10 +283,23 @@ async def add_transcript(body: Transcript):
     return {"ok": True}
 
 
+class QuestionBoundary(BaseModel):
+    previous: str = Field(min_length=1, max_length=8000)
+    incoming: str = Field(min_length=1, max_length=8000)
+    gap_seconds: float = Field(default=0, ge=0, le=86400)
+
+
+@app.post('/api/question/boundary', dependencies=[Depends(auth)])
+async def classify_question(body: QuestionBoundary):
+    if not CONFIG['llm_key']:
+        return {'decision': 'uncertain'}
+    return {'decision': await question_boundary(dict(CONFIG), body.previous, body.incoming, body.gap_seconds)}
+
+
 class Answer(BaseModel):
     question: str = Field(min_length=1, max_length=8000)
     profile: str = Field(default="", max_length=24000)
-    demo: bool = False
+    transcribed: bool = False
 
 
 async def generate(body):
@@ -288,20 +307,15 @@ async def generate(body):
     state.answer_status = "generating"
     state.answer, state.question = "", body.question
     state.current_question = body.question
-    state.publish({"type": "answer_start", "question": body.question, "demo": body.demo})
+    state.publish({"type": "answer_start", "question": body.question})
     try:
-        if body.demo:
-            text = ("【界面演示 · 固定模板，并非模型回答】\n\n当前问题：" + body.question +
-                    "\n\n回答组织方式\n1. 先用一句话直接回应问题。\n2. 解释关键原理或方案取舍。\n3. 补充你真实参与的项目案例。\n\n"
-                    "口述练习：我的理解是……我主要考虑了……在实际项目中，我负责的部分是……\n\n配置模型服务后，这里会流式显示针对问题和个人材料生成的答案。")
-            for chunk in [text[i:i+12] for i in range(0, len(text), 12)]:
-                await asyncio.sleep(0.025)
-                state.answer += chunk
-                state.publish({"type": "answer_delta", "text": chunk})
-        else:
-            async for chunk in stream_answer(dict(CONFIG), body.question, body.profile, list(state.history)):
-                state.answer += chunk
-                state.publish({"type": "answer_delta", "text": chunk})
+        question = await punctuate_question(dict(CONFIG), body.question) if body.transcribed else body.question
+        state.question = state.current_question = question
+        if question != body.question:
+            state.publish({"type": "question_normalized", "original": body.question, "question": question})
+        async for chunk in stream_answer(dict(CONFIG), question, body.profile, list(state.history)):
+            state.answer += chunk
+            state.publish({"type": "answer_delta", "text": chunk})
         if not state.answer.strip():
             raise RuntimeError("Empty response")
         state.answer_status = "done"
@@ -319,8 +333,8 @@ async def generate(body):
 async def answer(body: Answer):
     if not body.question.strip():
         raise HTTPException(400, "请先输入或选取一个问题。")
-    if not body.demo and not CONFIG["llm_key"]:
-        raise HTTPException(400, "尚未配置模型密钥，请配置 .env，或勾选固定模板演示。")
+    if not CONFIG["llm_key"]:
+        raise HTTPException(400, "尚未配置模型密钥，请在回答模型设置中配置，或配置 .env。")
     if state.answer_task and not state.answer_task.done():
         raise HTTPException(409, "已有回答正在生成，请先取消。")
     state.answer_task = asyncio.create_task(generate(body))

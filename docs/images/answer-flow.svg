@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="260" viewBox="0 0 1000 260" role="img" aria-labelledby="title desc">
+<title id="title">提问到模型回答的流程</title><desc id="desc">会议声音经播放设备回环和语音识别形成问题，或手动输入问题，之后调用回答模型并流式显示建议回答。</desc>
+<rect width="1000" height="260" rx="22" fill="#f5f7ff"/>
+<text x="40" y="43" font-size="24" font-weight="700" fill="#15234b" font-family="Microsoft YaHei, sans-serif">从提问到参考回答</text>
+<g font-family="Microsoft YaHei, sans-serif" text-anchor="middle">
+<rect x="35" y="84" width="165" height="92" rx="15" fill="#dce5ff"/><text x="117" y="120" font-size="18" fill="#142a65">会议播放声音</text><text x="117" y="150" font-size="14" fill="#435780">WASAPI 回环</text>
+<rect x="257" y="84" width="165" height="92" rx="15" fill="#dce5ff"/><text x="339" y="120" font-size="18" fill="#142a65">语音识别</text><text x="339" y="150" font-size="14" fill="#435780">默认本地 Zipformer</text>
+<rect x="480" y="84" width="165" height="92" rx="15" fill="#cbd9ff"/><text x="562" y="120" font-size="18" fill="#142a65">当前问题</text><text x="562" y="150" font-size="14" fill="#435780">可手动输入或修改</text>
+<rect x="703" y="84" width="118" height="92" rx="15" fill="#3d59d9"/><text x="762" y="120" font-size="18" fill="white">回答模型</text><text x="762" y="150" font-size="14" fill="white">本地或云端</text>
+<rect x="878" y="84" width="90" height="92" rx="15" fill="#d7f3e9"/><text x="923" y="120" font-size="16" fill="#17694f">参考回答</text><text x="923" y="150" font-size="13" fill="#17694f">逐步显示</text>
+<text x="227" y="140" font-size="30" fill="#64749b">→</text><text x="450" y="140" font-size="30" fill="#64749b">→</text><text x="674" y="140" font-size="30" fill="#64749b">→</text><text x="850" y="140" font-size="30" fill="#64749b">→</text>
+<text x="500" y="221" font-size="15" fill="#52617f">手动输入可直接进入「当前问题」；生成回答需要配置模型服务</text>
+</g></svg>

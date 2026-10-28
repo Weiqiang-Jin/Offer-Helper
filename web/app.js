@@ -8,28 +8,55 @@ let connected=false, generating=false, historyRows=[], selected=new Set(), busy=
 function notice(text) { $('notice').textContent=text; $('notice').hidden=!text; }
 async function api(path, body) {
   const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
-  if(!response.ok) { const err=await response.json(); throw Error(typeof err.detail==='string'?err.detail:(Array.isArray(err.detail)?err.detail.map(x=>x.msg).join('；'):'请求参数无效')); }
+  if(!response.ok) { const err=await response.json(); const error=Error(typeof err.detail==='string'?err.detail:(Array.isArray(err.detail)?err.detail.map(x=>x.msg).join('；'):'请求参数无效'));error.status=response.status;throw error; }
   return response.json();
 }
 function action(id, handler) { $(id).onclick=async()=>{try{await handler();}catch(e){notice(e.message);}}; }
 function controls(){ $('generate').disabled=!connected||generating; $('cancel').disabled=!connected||!generating; $('saveModel').disabled=!connected||generating; for(const id of ['meter','micTest','start','refresh','remoteDevice','selfDevice']) $(id).disabled=!connected||busy; for(const id of ['reset']) $(id).disabled=!connected; $('stop').disabled=!connected||!busy;$('deviceStop').disabled=!connected||!busy; $('micReplay').disabled=!connected||busy||!hasClip; }
-let autoTimer=null, questionEdited=false;
+let autoTimer=null, questionEdited=false, transcriptRows=[], lastTranscriptAt=0, questionSource='manual';
+let submittedCount=0, questionRevision=0;
 function renderHistory(){
   const latest=historyRows.filter(x=>x.role==='remote').at(-1);
-  if(latest && !questionEdited){$('question').value=latest.text;$('questionStatus').textContent=latest.final?'提问已定稿':'正在听取…';}
+  if(latest && !questionEdited){$('question').value=transcriptRows.length?transcriptRows.map(x=>x.text).join('，'):latest.text;$('questionStatus').textContent=latest.final?'提问已定稿':'正在听取…';}
 }
 function scheduleAnswer(event){
   clearTimeout(autoTimer);
   if(!event.final||!$('autoAnswer').checked)return;
   autoTimer=setTimeout(async()=>{
     if(!connected)return;
-    try{if(generating)await api('answer/cancel',{});await generateAnswer();}catch(e){notice(e.message);}
-  },900);
+    const revision=questionRevision;
+    try{
+      if(generating)await api('answer/cancel',{});
+      if(revision!==questionRevision||!connected||!$('autoAnswer').checked)return;
+      if(submittedCount>0&&transcriptRows.length>submittedCount){
+        $('questionStatus').textContent='判断是否为补充提问…';
+        let result={decision:'uncertain'};
+        try{
+          result=await api('question/boundary',{
+            previous:transcriptRows.slice(0,submittedCount).map(x=>x.text).join('，'),
+            incoming:transcriptRows.slice(submittedCount).map(x=>x.text).join('，'),
+            gap_seconds:Math.min(86400,transcriptRows[submittedCount].gapSeconds||0)});
+        }catch(error){
+          if(error.status===401||error.status===403)throw error;
+          if(revision===questionRevision)notice(error.status===404
+            ?'后台服务尚未更新，已将新增提问单独生成并保留历史上下文。请关闭旧服务窗口后重新启动，以启用自动分题。'
+            :'暂时无法判断新旧问题，已将新增提问单独生成并保留历史上下文。');
+        }
+        if(revision!==questionRevision||!connected||!$('autoAnswer').checked)return;
+        if(result.decision!=='continue'){transcriptRows=transcriptRows.slice(submittedCount);submittedCount=0;}
+        renderHistory();
+        $('questionStatus').textContent=result.decision==='continue'?'已合并补充条件':result.decision==='new'?'已识别新问题':'单独处理新增提问 · 保留上下文';
+      }
+      await generateAnswer();
+    }catch(e){if(revision===questionRevision){renderHistory();notice(e.message);}}
+  },3000);
 }
 async function generateAnswer(){
   clearTimeout(autoTimer);
+  questionRevision++;
+  const submittedRows=questionSource==='speech'?transcriptRows.length:null;
   generating=true;controls();
-  try{await api('answer',{question:$('question').value,profile:$('profile').value,demo:$('demo').checked});}
+  try{await api('answer',{question:$('question').value,profile:$('profile').value,transcribed:questionSource==='speech'});if(submittedRows!==null)submittedCount=submittedRows;}
   catch(e){generating=false;controls();throw e;}
 }
 function apply(event){
@@ -37,21 +64,23 @@ function apply(event){
     if(event.device_test)showDeviceTest(event.device_test);historyRows=event.history;renderHistory();$('answerFor').textContent=event.question?'回答对应：'+event.question:'针对当前问题给出可直接口述的建议';$('answer').textContent=event.answer||'选取或输入问题后，点击生成回答。';
     if(!$('question').value)$('question').value=event.question;
     generating=event.answer_status==='generating';busy=Object.values(event.audio_status).some(x=>x!=='stopped');
-    $('services').textContent=`语音：${event.configured.asr?'已配置':'未配置'} · 模型：${event.configured.llm?'已配置':'未配置'}`;
+    $('services').textContent=`语音：${event.configured.asr_backend==='sherpa'?'本地 Zipformer':'阿里云'} · ${event.configured.asr?'就绪':'未配置 / 缺少模型'} · 模型：${event.configured.llm?'已配置':'未配置'}`;
     for(const role of ['remote','self'])setAudio(role,event.audio_status[role]||'stopped');
     $('answerStatus').textContent=generating?'生成中':'等待操作';controls();
-  } else if(event.type==='transcript') {const old=historyRows.find(x=>x.id===event.id);if(old)Object.assign(old,event);else historyRows.push(event);questionEdited=false;renderHistory();$('answerFor').textContent='正在接收新问题；生成后更新下方建议';scheduleAnswer(event);}
+  } else if(event.type==='transcript') {questionRevision++;const now=Date.now();const gapSeconds=lastTranscriptAt?Math.max(0,(now-lastTranscriptAt)/1000):0;lastTranscriptAt=now;const part=transcriptRows.find(x=>x.id===event.id);if(part)Object.assign(part,event);else transcriptRows.push({...event,gapSeconds});const old=historyRows.find(x=>x.id===event.id);if(old)Object.assign(old,event);else historyRows.push(event);questionEdited=false;questionSource='speech';renderHistory();$('answerFor').textContent='正在接收后续提问；现有回答可能更新';scheduleAnswer(event);}
   else if(event.type==='model_settings'){showModel(event);$('modelFeedback').textContent='模型设置已更新，下次生成生效。';}
   else if(event.type==='device_test'){showDeviceTest(event);if(event.finished){busy=false;setAudio('remote','stopped');setAudio('self','stopped');}controls();}
   else if(event.type==='level')$(event.role+'Meter').style.width=Math.min(100,Math.sqrt(event.value)*180)+'%';
   else if(event.type==='audio_status'){setAudio(event.role,event.status);}
   else if(event.type==='error'||event.type==='warning')notice(event.message);
-  else if(event.type==='answer_start'){generating=true;$('answerFor').textContent='回答对应：'+event.question;$('answer').textContent='';$('answerStatus').textContent=event.demo?'固定模板演示':'生成中';controls();}
+  else if(event.type==='answer_start'){generating=true;$('answerFor').textContent='回答对应：'+event.question;$('answer').textContent='';$('answerStatus').textContent='生成中';controls();}
+  else if(event.type==='question_normalized'){if(!questionEdited&&$('question').value===event.original){$('question').value=event.question;$('questionStatus').textContent='已补充标点';}$('answerFor').textContent='回答对应：'+event.question;}
   else if(event.type==='answer_delta'){$('answer').textContent+=event.text;}
-  else if(event.type==='answer_end'){generating=false;$('answerStatus').textContent=({done:'已完成',cancelled:'已取消',error:'生成失败'}[event.status]||event.status)+` · ${event.elapsed}s`;controls();}
+  else if(event.type==='answer_end'){generating=false;$('answerStatus').textContent=({done:'已生成 · 后续补充可更新',cancelled:'已取消',error:'生成失败'}[event.status]||event.status)+` · ${event.elapsed}s`;controls();}
 }
 function setAudio(role,status){$(role+'Status').textContent=({running:'采集中',starting:'正在启动',stopped:'未采集'}[status]||status);if(status==='stopped')$(role+'Meter').style.width='0%';}
 function connect(){
+  questionRevision++;
   clearTimeout(retryTimer);
   if(socket){socket.onclose=null;socket.onmessage=null;socket.close();}
   connected=false;clearTimeout(autoTimer); controls();
@@ -81,13 +110,13 @@ async function testDevice(kind){
 action('micTest',()=>testDevice('record'));
 action('micReplay',()=>testDevice('replay'));
 action('refresh',refresh);action('meter',()=>testDevice('tone'));action('start',()=>start(true));
-action('stop',async()=>{clearTimeout(autoTimer);await api('audio/stop',{});busy=false;controls();notice('采集已停止。');});
+action('stop',async()=>{questionRevision++;clearTimeout(autoTimer);await api('audio/stop',{});busy=false;controls();notice('采集已停止。');});
 action('generate',generateAnswer);
-action('cancel',()=>{clearTimeout(autoTimer);return api('answer/cancel',{});});
-action('reset',async()=>{clearTimeout(autoTimer);await api('reset',{});$('question').value='';questionEdited=false;$('questionStatus').textContent='等待提问';notice('会话已清空。个人材料仍保留在当前页面。');});
-$('question').addEventListener('input',()=>{questionEdited=true;clearTimeout(autoTimer);$('questionStatus').textContent='手动编辑';});
-$('autoAnswer').addEventListener('change',()=>{clearTimeout(autoTimer);});
-document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();if(!$('generate').disabled)$('generate').click();}});
+action('cancel',()=>{questionRevision++;clearTimeout(autoTimer);return api('answer/cancel',{});});
+action('reset',async()=>{questionRevision++;submittedCount=0;clearTimeout(autoTimer);await api('reset',{});transcriptRows=[];lastTranscriptAt=0;questionSource='manual';$('question').value='';questionEdited=false;$('questionStatus').textContent='等待提问';notice('会话已清空。个人材料仍保留在当前页面。');});
+$('question').addEventListener('input',()=>{questionRevision++;questionEdited=true;questionSource='manual';clearTimeout(autoTimer);$('questionStatus').textContent='手动编辑';});
+$('autoAnswer').addEventListener('change',()=>{questionRevision++;clearTimeout(autoTimer);});
+$('question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!e.ctrlKey&&!e.altKey&&!e.metaKey){e.preventDefault();if(!$('generate').disabled)$('generate').click();}});
 const reconnect=document.createElement('button');reconnect.id='reconnect';reconnect.className='quiet';reconnect.textContent='重新连接';reconnect.onclick=connect;$('connection').parentElement.append(reconnect);
 window.addEventListener('storage',e=>{if(e.key==='interviewToken')connect();});
 controls();connect();
@@ -100,7 +129,7 @@ async function loadModel(){const data=await api('model');$('modelName').value=da
 action('saveModel',async()=>{
   const data=await api('model',{model:$('modelName').value,base_url:$('modelUrl').value,api_key:$('modelKey').value,clear_key:$('modelClearKey').checked,remember:$('modelRemember').checked});
   $('modelKey').value='';$('modelClearKey').checked=false;showModel(data);
-  $('modelFeedback').textContent=($('modelRemember').checked?'已保存到本机。':'仅本次运行生效，重启恢复已保存配置。')+' 下次生成使用 '+data.model+'；真实回答请取消勾选固定模板演示。';
+  $('modelFeedback').textContent=($('modelRemember').checked?'已保存到本机。':'仅本次运行生效，重启恢复已保存配置。')+' 下次生成使用 '+data.model+'。';
 });
 
 $('deviceStop').onclick=()=>$('stop').click();

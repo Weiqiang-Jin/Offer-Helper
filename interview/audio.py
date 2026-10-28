@@ -61,7 +61,10 @@ class AudioSession:
             if is_loop != (role == "remote") or d["maxInputChannels"] < 1:
                 raise ValueError("所选设备类型不正确，请刷新设备列表。")
             channels, rate = int(d["maxInputChannels"]), int(d["defaultSampleRate"])
-            if self.transcribe:
+            if self.transcribe and self.config.get('asr_backend', 'sherpa') == 'sherpa':
+                from .local_asr import LocalRecognizer
+                recognizer = LocalRecognizer(self.config, rate, send, prefix)
+            elif self.transcribe:
                 import dashscope
                 from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
                 dashscope.base_websocket_api_url = self.config["asr_url"]
@@ -89,7 +92,7 @@ class AudioSession:
                 try:
                     frames.put_nowait(data)
                 except queue.Full:
-                    send({"type": "error", "message": "音频处理积压，已停止采集，请检查网络后重试。"})
+                    send({"type": "error", "message": "音频处理积压，已停止采集，请检查电脑负载或网络后重试。"})
                     self.halt.set()
                 if status:
                     send({"type": "warning", "message": "音频设备报告数据中断，请检查字幕是否缺失。"})
