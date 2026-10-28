@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+*.log
+.runtime.json
+.local-token
+.model-settings.json
+.model-settings.tmp
+
+# Local overrides, packaging output, and downloaded model weights
+.env.*
+!.env.example
+models/
+.ollama/
+*.gguf
+*.safetensors
+build/
+dist/
+*-preview.png
+preview.png
+.mobile-tls/
+
