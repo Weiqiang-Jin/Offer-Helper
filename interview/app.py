@@ -4,22 +4,29 @@ import os
 import secrets
 import time
 import uuid
+from html import escape
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .audio import AudioSession, devices
 from .device_test import DeviceTest
-from .answers import stream_answer, punctuate_question, question_boundary
+from .answers import stream_answer, punctuate_question, question_boundary, prepare_background
+from .resume import extract_resume
 from .settings import ModelSettings, load_settings, public_settings, update_settings
 from .mobile import Companion
 from .local_asr import ready as local_asr_ready
+from .chatgpt import connection as chatgpt
+
+
+def answer_config():
+    return {**CONFIG, **({'chatgpt': chatgpt} if chatgpt.enabled else {})}
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
@@ -36,6 +43,8 @@ load_settings(CONFIG)
 
 class State:
     def __init__(self):
+        self.background = None
+        self.preparing_background = False
         self.history = []
         self.answer = ""
         self.question = ""
@@ -56,7 +65,7 @@ class State:
                 "question": self.question, "answer_status": self.answer_status,
                 "audio_status": self.status, "mode": self.mode,
                 "device_test": {**self.test_status, 'has_clip': self.test_clip is not None},
-                "configured": {"asr": local_asr_ready(CONFIG) if CONFIG["asr_backend"] == "sherpa" else bool(CONFIG["asr_key"]), "asr_backend": CONFIG["asr_backend"], "llm": bool(CONFIG["llm_key"])}}
+                "configured": {"asr": local_asr_ready(CONFIG) if CONFIG["asr_backend"] == "sherpa" else bool(CONFIG["asr_key"]), "asr_backend": CONFIG["asr_backend"], "llm": bool(CONFIG["llm_key"]) or chatgpt.enabled}}
 
     def publish(self, event):
         for q in list(self.clients):
@@ -167,6 +176,61 @@ async def mobile_disable():
 @app.get('/api/model', dependencies=[Depends(auth)])
 def get_model():
     return public_settings(CONFIG)
+
+
+@app.get('/api/chatgpt', dependencies=[Depends(auth)])
+async def chatgpt_status():
+    return chatgpt.status()
+
+
+@app.post('/api/chatgpt/login', dependencies=[Depends(auth)])
+async def chatgpt_login(request: Request):
+    if state.answer_task and not state.answer_task.done():
+        raise HTTPException(409, '请先等待回答完成或取消生成。')
+    return {'url': chatgpt.begin(request.url.port or 80)}
+
+
+@app.get('/auth/callback')
+async def chatgpt_callback(request: Request):
+    try:
+        await chatgpt.finish(dict(request.query_params))
+        message = '登录完成。请返回 offer helper，刷新账号模型列表并选择是否启用。'
+    except Exception:
+        message = chatgpt.login_error or '登录未完成，请返回 offer helper 重新登录。'
+    return HTMLResponse('<meta charset="utf-8"><title>offer helper</title><p>' + escape(message) + '</p><p>请返回软件查看状态；重新登录请从软件按钮发起，不要刷新本页。</p>',
+        headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
+
+
+@app.post('/api/chatgpt/models', dependencies=[Depends(auth)])
+async def chatgpt_models():
+    try:
+        await chatgpt.list_models()
+    except Exception:
+        raise HTTPException(400, '无法读取 ChatGPT 模型，请检查网络及计划授权，或重新登录。')
+    return chatgpt.status()
+
+
+class ChatGPTSelection(BaseModel):
+    enabled: bool
+    model: str = ''
+
+
+@app.post('/api/chatgpt/select', dependencies=[Depends(auth)])
+async def chatgpt_select(body: ChatGPTSelection):
+    if state.answer_task and not state.answer_task.done():
+        raise HTTPException(409, '请先等待回答完成或取消生成。')
+    if body.enabled and (not chatgpt.status()['sharing'] or body.model not in [m['slug'] for m in chatgpt.models]):
+        raise HTTPException(400, '请先登录、授权计划使用并选择账号可用模型。')
+    chatgpt.enabled, chatgpt.model = body.enabled, body.model
+    return chatgpt.status()
+
+
+@app.post('/api/chatgpt/logout', dependencies=[Depends(auth)])
+async def chatgpt_logout():
+    if state.answer_task and not state.answer_task.done():
+        raise HTTPException(409, '请先取消生成。')
+    chatgpt.logout()
+    return chatgpt.status()
 
 
 @app.post('/api/model', dependencies=[Depends(auth)])
@@ -291,15 +355,57 @@ class QuestionBoundary(BaseModel):
 
 @app.post('/api/question/boundary', dependencies=[Depends(auth)])
 async def classify_question(body: QuestionBoundary):
-    if not CONFIG['llm_key']:
+    if not CONFIG['llm_key'] and not chatgpt.enabled:
         return {'decision': 'uncertain'}
-    return {'decision': await question_boundary(dict(CONFIG), body.previous, body.incoming, body.gap_seconds)}
+    return {'decision': await question_boundary(answer_config(), body.previous, body.incoming, body.gap_seconds)}
+
+
+class BackgroundInput(BaseModel):
+    filename: str = Field(default='', max_length=255)
+    file_data: str = Field(default='', max_length=7000000)
+    profile: str = Field(default='', max_length=24000)
+
+
+@app.get('/api/background', dependencies=[Depends(auth)])
+async def get_background():
+    return {'background': state.background}
+
+
+@app.post('/api/background', dependencies=[Depends(auth)])
+async def build_background(body: BackgroundInput):
+    if state.preparing_background or state.audio or (state.answer_task and not state.answer_task.done()):
+        raise HTTPException(409, '请在开始面试前建立上下文，先停止采集或等待当前任务完成。')
+    if not CONFIG['llm_key'] and not chatgpt.enabled:
+        raise HTTPException(400, '请先配置或启用回答模型。')
+    state.preparing_background = True
+    try:
+        resume = await asyncio.to_thread(extract_resume, body.filename, body.file_data) if body.file_data else ''
+        if not resume and not body.profile.strip():
+            raise ValueError('请先选择简历附件或填写个人材料与岗位。')
+        summary = await prepare_background(answer_config(), resume, body.profile)
+        state.background = {'id': uuid.uuid4().hex, 'summary': summary, 'filename': body.filename}
+        return {'background': state.background}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        raise HTTPException(502, '预读材料失败，请检查当前模型连接或额度后重试。')
+    finally:
+        state.preparing_background = False
+
+
+@app.post('/api/background/clear', dependencies=[Depends(auth)])
+async def clear_background():
+    if state.preparing_background:
+        raise HTTPException(409, '请等待材料预读完成。')
+    state.background = None
+    return {'background': None}
 
 
 class Answer(BaseModel):
     question: str = Field(min_length=1, max_length=8000)
     profile: str = Field(default="", max_length=24000)
     transcribed: bool = False
+    context_id: str = ''
 
 
 async def generate(body):
@@ -309,11 +415,12 @@ async def generate(body):
     state.current_question = body.question
     state.publish({"type": "answer_start", "question": body.question})
     try:
-        question = await punctuate_question(dict(CONFIG), body.question) if body.transcribed else body.question
+        config = answer_config()
+        question = await punctuate_question(config, body.question) if body.transcribed else body.question
         state.question = state.current_question = question
         if question != body.question:
             state.publish({"type": "question_normalized", "original": body.question, "question": question})
-        async for chunk in stream_answer(dict(CONFIG), question, body.profile, list(state.history)):
+        async for chunk in stream_answer(config, question, body.profile, list(state.history)):
             state.answer += chunk
             state.publish({"type": "answer_delta", "text": chunk})
         if not state.answer.strip():
@@ -331,9 +438,15 @@ async def generate(body):
 
 @app.post("/api/answer", dependencies=[Depends(auth)])
 async def answer(body: Answer):
+    if state.preparing_background:
+        raise HTTPException(409, '正在预读面试材料，请稍候。')
+    if body.context_id:
+        if not state.background or body.context_id != state.background['id']:
+            raise HTTPException(409, '面试上下文已失效，请重新建立或刷新页面。')
+        body.profile = state.background['summary']
     if not body.question.strip():
         raise HTTPException(400, "请先输入或选取一个问题。")
-    if not CONFIG["llm_key"]:
+    if not CONFIG["llm_key"] and not chatgpt.enabled:
         raise HTTPException(400, "尚未配置模型密钥，请在回答模型设置中配置，或配置 .env。")
     if state.answer_task and not state.answer_task.done():
         raise HTTPException(409, "已有回答正在生成，请先取消。")

@@ -10,3 +10,5 @@ cryptography>=46,<51
 qrcode>=8,<9
 
 sherpa-onnx>=1.13.8,<2
+PyJWT[crypto]>=2.10,<3
+pypdf>=6,<7

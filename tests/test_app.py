@@ -28,6 +28,30 @@ def test_auth_and_missing_credentials(client):
     assert client.post('/api/answer', json={'question': '问题', 'demo': True}).status_code == 400
 
 
+def test_prepared_context_is_reused_and_cleared(client,monkeypatch):
+    import base64
+    prepared=[];seen=[]
+    async def prepare(config,resume,profile):
+        prepared.append((resume,profile));return '研究方向：自动驾驶；项目：轨迹预测'
+    async def answer(config,question,profile,history):
+        seen.append(profile);yield '面试回答'
+    monkeypatch.setattr(module,'prepare_background',prepare)
+    monkeypatch.setattr(module,'stream_answer',answer)
+    monkeypatch.setitem(module.CONFIG,'llm_key','fake')
+    result=client.post('/api/background',json={'filename':'resume.txt','file_data':base64.b64encode('完整简历'.encode()).decode(),'profile':'岗位：算法研发'})
+    assert result.status_code==200
+    context_id=result.json()['background']['id']
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'token':module.TOKEN});ws.receive_json()
+        for question in ['介绍研究方向','端到端是什么意思']:
+            assert client.post('/api/answer',json={'question':question,'context_id':context_id}).status_code==200
+            while ws.receive_json()['type']!='answer_end':pass
+    assert prepared==[('完整简历','岗位：算法研发')]
+    assert seen==['研究方向：自动驾驶；项目：轨迹预测']*2
+    assert client.post('/api/background/clear',json={}).status_code==200
+    assert client.post('/api/answer',json={'question':'问题','context_id':context_id}).status_code==409
+
+
 def test_transcript_finalization_and_stale_session(client):
     s = module.state
     s.event({'type': 'transcript', 'id': 'a', 'role': 'remote', 'text': '草稿', 'final': False})

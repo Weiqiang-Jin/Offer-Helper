@@ -58,3 +58,15 @@ test('failed answer submission does not advance submitted segments',async()=>{
   await assert.rejects(run('generateAnswer()'));
   assert.equal(run('submittedCount'),0);
 });
+
+test('prepared background is referenced without resending personal materials',async()=>{
+  const {requests,run}=setup('continue');
+  run("preparedContextId='prepared-id';$('profile').value='完整个人材料';$('question').value='介绍项目';");
+  await run('generateAnswer()');
+  const body=requests.find(x=>x.path==='answer').body;
+  assert.equal(body.context_id,'prepared-id');
+  assert.equal(body.profile,undefined);
+  run('backgroundDirty=true');
+  await assert.rejects(run('generateAnswer()'));
+  assert.equal(requests.filter(x=>x.path==='answer').length,1);
+});

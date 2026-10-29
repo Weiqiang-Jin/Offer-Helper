@@ -4,6 +4,8 @@ if(fragment.has('token')) { localStorage.setItem('interviewToken', fragment.get(
 let token = localStorage.getItem('interviewToken') || sessionStorage.getItem('interviewToken') || '';
 let socket=null, retryTimer=null;
 let hasClip=false;
+let preparedContextId='', backgroundDirty=false, preparingBackground=false;
+function ensureBackground(){if(preparingBackground||backgroundDirty||($('profile').value.trim()&&!preparedContextId))throw Error('请先点击“建立面试上下文”，等待预读完成后再开始问答。');}
 let connected=false, generating=false, historyRows=[], selected=new Set(), busy=false;
 function notice(text) { $('notice').textContent=text; $('notice').hidden=!text; }
 async function api(path, body) {
@@ -52,11 +54,12 @@ function scheduleAnswer(event){
   },3000);
 }
 async function generateAnswer(){
+  ensureBackground();
   clearTimeout(autoTimer);
   questionRevision++;
   const submittedRows=questionSource==='speech'?transcriptRows.length:null;
   generating=true;controls();
-  try{await api('answer',{question:$('question').value,profile:$('profile').value,transcribed:questionSource==='speech'});if(submittedRows!==null)submittedCount=submittedRows;}
+  try{await api('answer',{question:$('question').value,context_id:preparedContextId,transcribed:questionSource==='speech'});if(submittedRows!==null)submittedCount=submittedRows;}
   catch(e){generating=false;controls();throw e;}
 }
 function apply(event){
@@ -94,7 +97,7 @@ function connect(){
   ws.onclose=e=>{clearTimeout(autoTimer);connected=false;$('connection').textContent='连接断开';controls();if(e.code===1008){notice('此页面的连接凭据已失效。请双击 F:\\project2\\start.bat，并使用自动打开的新页面；不要继续操作旧标签页。');return;}notice('本地服务已断开，正在重试。请保持启动窗口打开；服务未启动时请双击 start.bat。');retryTimer=setTimeout(connect,2000);};
 }
 async function refresh(){const result=await api('devices');for(const role of ['remote','self']){const select=$(role+'Device'),old=select.value;select.replaceChildren();for(const d of result[role]){const option=document.createElement('option');option.value=d.id;option.textContent=d.name;select.append(option);}if([...select.options].some(x=>x.value===old))select.value=old;if(!select.options.length){const option=document.createElement('option');option.value='';option.textContent='未发现设备，请连接耳机或麦克风后刷新';select.append(option);}}}
-async function start(transcribe){if(!$('remoteDevice').value)throw Error('请先选择会议使用的播放设备。');busy=true;controls();try{await api('audio/start',{remote:Number($('remoteDevice').value),transcribe});notice(transcribe?'实时转写已请求启动，请确认播放设备显示“采集中”。':'音量测试中：不会上传音频，也不会产生字幕。请播放会议声音，观察音量条。');}catch(e){busy=false;controls();throw e;}}
+async function start(transcribe){if(transcribe)ensureBackground();if(!$('remoteDevice').value)throw Error('请先选择会议使用的播放设备。');busy=true;controls();try{await api('audio/start',{remote:Number($('remoteDevice').value),transcribe});notice(transcribe?'实时转写已请求启动，请确认播放设备显示“采集中”。':'音量测试中：不会上传音频，也不会产生字幕。请播放会议声音，观察音量条。');}catch(e){busy=false;controls();throw e;}}
 function showDeviceTest(event){
   hasClip=!!event.has_clip;
   $('testFeedback').textContent=event.message+(event.phase==='recording'?' 剩余 '+Math.ceil(event.remaining)+' 秒':'');

@@ -20,4 +20,6 @@ dist/
 *-preview.png
 preview.png
 .mobile-tls/
+.chatgpt-registration.json
+.chatgpt-registration.tmp
 

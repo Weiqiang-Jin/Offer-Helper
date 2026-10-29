@@ -56,3 +56,6 @@ uvicorn==0.54.0
 websocket-client==1.9.2
 websockets==17.3
 yarl==1.25.1
+
+PyJWT==2.15.1
+pypdf==6.21.4
