@@ -201,4 +201,6 @@ class ChatGPTConnection:
         self.enabled = False
 
 
-connection = ChatGPTConnection(Path(__file__).resolve().parents[1] / '.chatgpt-registration.json')
+from .paths import DATA_DIR
+
+connection = ChatGPTConnection(DATA_DIR / '.chatgpt-registration.json')

@@ -1,9 +1,10 @@
 """Offline streaming Zipformer adapter; native sherpa resamples input continuously."""
 from pathlib import Path
+from .paths import DATA_DIR
 import numpy as np
 
 MODEL_NAME = 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20'
-MODEL_DIR = Path(__file__).resolve().parents[1] / 'models' / MODEL_NAME
+MODEL_DIR = DATA_DIR / 'models' / MODEL_NAME
 FILES = {'encoder': 'encoder-epoch-99-avg-1.int8.onnx',
          'decoder': 'decoder-epoch-99-avg-1.onnx',
          'joiner': 'joiner-epoch-99-avg-1.int8.onnx', 'tokens': 'tokens.txt'}
@@ -11,7 +12,7 @@ FILES = {'encoder': 'encoder-epoch-99-avg-1.int8.onnx',
 def model_files(config):
     root = Path(config.get('asr_model_dir') or MODEL_DIR)
     if not root.is_absolute():
-        root = Path(__file__).resolve().parents[1] / root
+        root = DATA_DIR / root
     return {key: str(root / name) for key, name in FILES.items()}
 
 def ready(config):

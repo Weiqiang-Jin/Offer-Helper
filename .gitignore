@@ -17,6 +17,7 @@ models/
 *.safetensors
 build/
 dist/
+build-tools/
 *-preview.png
 preview.png
 .mobile-tls/

@@ -25,13 +25,14 @@ from .settings import ModelSettings, load_settings, public_settings, update_sett
 from .mobile import Companion
 from .local_asr import ready as local_asr_ready
 from .chatgpt import connection as chatgpt
+from .paths import DATA_DIR, RESOURCE_DIR, overlay_command
 
 
 def answer_config():
     return {**CONFIG, **({'chatgpt': chatgpt} if chatgpt.enabled else {})}
 
-ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / ".env")
+ROOT = RESOURCE_DIR
+load_dotenv(DATA_DIR / ".env")
 TOKEN = os.environ.get("INTERVIEW_TOKEN") or secrets.token_urlsafe(32)
 CONFIG = {"asr_backend": os.getenv("ASR_BACKEND", "sherpa"),
           "asr_model_dir": os.getenv("SHERPA_MODEL_DIR", ""),"asr_key": os.getenv("DASHSCOPE_API_KEY", ""),
@@ -161,7 +162,7 @@ def overlay_start(request: Request):
         raise HTTPException(400, '本机悬浮窗仅支持 Windows。')
     if overlay_process is None or overlay_process.poll() is not None:
         overlay_process = subprocess.Popen(
-            [sys.executable, '-m', 'interview.overlay', str(request.url.port)],
+            overlay_command(request.url.port),
             cwd=ROOT, creationflags=subprocess.CREATE_NO_WINDOW,
             env={**os.environ, 'INTERVIEW_OVERLAY_TOKEN': TOKEN})
     return {'running': True}

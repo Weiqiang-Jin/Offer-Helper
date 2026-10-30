@@ -5,7 +5,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
-SETTINGS_PATH = Path(__file__).resolve().parents[1] / '.model-settings.json'
+from .paths import DATA_DIR
+
+SETTINGS_PATH = DATA_DIR / '.model-settings.json'
 
 
 class ModelSettings(BaseModel):

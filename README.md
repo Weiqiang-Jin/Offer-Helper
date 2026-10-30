@@ -2,7 +2,23 @@
 
 面试提问与参考回答工作台：接收 Windows 会议播放音频，识别面试官提问，再流式生成面试者接下来可以说的建议稿。也支持直接输入问题。
 
-当前是 **Windows 本地 Web 应用原型**，不是已发布的跨平台安装包。问题在上方，参考回答位于页面中间，设备配置位于底部。麦克风仅用于用户主动启动的 5 秒测试录音及回放，不上传、不转写，不记录面试过程中的本人回答。
+提供 **Windows x64 桌面版**，也保留本地 Web 启动方式。问题在上方，参考回答位于页面中间，设备配置位于底部。麦克风仅用于用户主动启动的 5 秒测试录音及回放，不上传、不转写，不记录面试过程中的本人回答。
+
+**[下载 Windows 桌面版 v0.3.0](https://github.com/Weiqiang-Jin/Offer-Helper/releases/tag/v0.3.0)**：提供安装包、便携版 ZIP 和 SHA-256 校验文件。首次使用请配置回答模型，并在“语音模型”菜单选择或下载本地识别模型。
+
+桌面版安装包：`dist/OfferHelper-Setup-0.3.0-x64.exe`。安装到当前用户目录并创建猫咪图标的桌面快捷方式，无需另外安装 Python 或浏览器。也可以解压 `dist/OfferHelper-0.3.0-windows-x64.zip` 并运行 `OfferHelper.exe`，保留旁边的 `_internal` 目录。
+
+桌面版配置、下载模型和日志保存在 `%LOCALAPPDATA%/OfferHelper`，可通过“软件 > 打开数据目录”查看。菜单“语音模型”支持下载或选择已有模型目录。软件关闭时同时关闭后台、音频采集、手机服务和悬浮窗。源码开发模式默认沿用项目目录的配置。桌面安装包不包含个人配置、密钥和模型权重；旧版用户可按安装目录中的《使用说明.txt》迁移配置。安装包尚未进行数字签名。
+
+从源码运行桌面界面及重新构建：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-desktop.txt
+.\.venv\Scripts\python.exe desktop.py
+.\build-desktop.ps1
+```
+
+构建使用 PyInstaller 打包运行时，并默认调用 Windows 自带的 .NET Framework 编译器生成当前用户安装包；也支持通过 `-InnoCompiler` 指定已有的 Inno Setup 编译器。桌面界面使用 PySide6 / Qt WebEngine。共享预览由用户选择屏幕后开始，仅在本机显示；它不能代替会议软件自身的共享检查。
 
 Windows 上可开启独立的置顶回答悬浮窗。悬浮窗调用 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，主页面同时隐藏回答正文；手机配对显示仍可单独使用。点击“预览整个屏幕”，在浏览器选择整个屏幕后检查预览画面。浏览器预览只验证浏览器自身的采集结果；会议软件可能使用不同的采集方式，正式共享前仍需检查会议软件的共享预览。若悬浮窗意外关闭，主页面会恢复回答显示。关闭后台服务时也会关闭悬浮窗。
 

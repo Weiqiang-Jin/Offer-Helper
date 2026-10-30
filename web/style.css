@@ -15,3 +15,5 @@ header{height:100px}.brand strong{font-size:32px;font-weight:750;letter-spacing:
 .resume-option{margin-top:24px;padding:18px;background:#f8faff;border:1px solid #dce3ed;border-radius:12px}.resume-option input{max-width:100%}#backgroundPreview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:14px}
 
 .overlay-active #answer{color:transparent;font-size:0;position:relative}.overlay-active #answer::after{content:"回答已转至本机悬浮窗";position:absolute;inset:0;display:grid;place-items:center;color:#647189;font-size:17px}#sharePreview{display:block;width:min(100%,720px);max-height:405px;background:#18243a;border-radius:10px;margin-top:14px}#sharePreview[hidden]{display:none}
+
+img.logo{display:block;object-fit:cover;object-position:50% 65%;flex-shrink:0}

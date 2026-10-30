@@ -99,6 +99,10 @@ def exclude_window(hwnd):
 def run(port, token):
     root = tk.Tk()
     root.title('offer helper · 本机回答')
+    from .paths import RESOURCE_DIR
+    icon = RESOURCE_DIR / 'web' / 'assets' / 'app.ico'
+    if icon.exists():
+        root.iconbitmap(str(icon))
     root.geometry('580x340+80+80')
     root.minsize(100, 100)
     root.attributes('-topmost', True)

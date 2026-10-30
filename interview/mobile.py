@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 
-ROOT = Path(__file__).resolve().parents[1]
+from .paths import DATA_DIR, RESOURCE_DIR
+
+ROOT = DATA_DIR
 
 
 def lan_addresses():
@@ -75,15 +77,15 @@ class Companion:
 
         @self.app.get('/')
         def page():
-            return FileResponse(ROOT / 'web/mobile.html')
+            return FileResponse(RESOURCE_DIR / 'web/mobile.html')
 
         @self.app.get('/mobile.js')
         def script():
-            return FileResponse(ROOT / 'web/mobile.js')
+            return FileResponse(RESOURCE_DIR / 'web/mobile.js')
 
         @self.app.get('/style.css')
         def style():
-            return FileResponse(ROOT / 'web/style.css')
+            return FileResponse(RESOURCE_DIR / 'web/style.css')
 
         @self.app.post('/pair')
         async def pair(body: PairBody):
