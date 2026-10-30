@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import os
 import secrets
+import subprocess
+import sys
 import time
 import uuid
 from html import escape
@@ -110,11 +112,14 @@ class State:
 
 state = State()
 companion = Companion(state)
+overlay_process = None
 
 
 @asynccontextmanager
 async def lifespan(app):
     yield
+    if overlay_process and overlay_process.poll() is None:
+        overlay_process.terminate()
     await companion.disable()
     if state.answer_task:
         state.answer_task.cancel()
@@ -147,6 +152,33 @@ def index():
 @app.get("/api/state", dependencies=[Depends(auth)])
 def get_state():
     return state.snapshot()
+
+
+@app.post('/api/overlay/start', dependencies=[Depends(auth)])
+def overlay_start(request: Request):
+    global overlay_process
+    if sys.platform != 'win32':
+        raise HTTPException(400, '本机悬浮窗仅支持 Windows。')
+    if overlay_process is None or overlay_process.poll() is not None:
+        overlay_process = subprocess.Popen(
+            [sys.executable, '-m', 'interview.overlay', str(request.url.port)],
+            cwd=ROOT, creationflags=subprocess.CREATE_NO_WINDOW,
+            env={**os.environ, 'INTERVIEW_OVERLAY_TOKEN': TOKEN})
+    return {'running': True}
+
+
+@app.post('/api/overlay/stop', dependencies=[Depends(auth)])
+def overlay_stop():
+    global overlay_process
+    if overlay_process and overlay_process.poll() is None:
+        overlay_process.terminate()
+    overlay_process = None
+    return {'running': False}
+
+
+@app.get('/api/overlay/status', dependencies=[Depends(auth)])
+def overlay_status():
+    return {'running': bool(overlay_process and overlay_process.poll() is None)}
 
 
 @app.get('/api/mobile', dependencies=[Depends(auth)])
